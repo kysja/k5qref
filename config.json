@@ -1,0 +1,66 @@
+{
+    "hotkey": "ctrl+f1",
+    "auto_paste": true,
+    "tabs": {
+        "Developer": {
+            "Git": [
+                {
+                    "title": "Check status",
+                    "text": "git status --short"
+                },
+                {
+                    "title": "View recent commits",
+                    "text": "git log --oneline -10"
+                },
+                {
+                    "title": "Create a branch",
+                    "text": "git switch -c feature/my-change"
+                }
+            ],
+            "Shell": [
+                {
+                    "title": "List all files",
+                    "text": "Get-ChildItem -Force"
+                },
+                {
+                    "title": "Find text recursively",
+                    "text": "rg \"search text\""
+                },
+                {
+                    "title": "Show current directory",
+                    "text": "Get-Location"
+                }
+            ]
+        },
+        "Writing": {
+            "Markdown": [
+                {
+                    "title": "Link",
+                    "text": "[label](https://example.com)"
+                },
+                {
+                    "title": "Task",
+                    "text": "- [ ] Task"
+                },
+                {
+                    "title": "Code block",
+                    "text": "```text\nPaste code here\n```"
+                }
+            ],
+            "Symbols": [
+                {
+                    "title": "Right arrow",
+                    "text": "→"
+                },
+                {
+                    "title": "Em dash",
+                    "text": "—"
+                },
+                {
+                    "title": "Check mark",
+                    "text": "✓"
+                }
+            ]
+        }
+    }
+}

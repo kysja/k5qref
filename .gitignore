@@ -1,0 +1,9 @@
+.venv/
+build/
+dist/
+release/
+*.spec
+__pycache__/
+.codex/
+.claude/
+.agents/
