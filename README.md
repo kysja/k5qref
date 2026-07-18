@@ -6,8 +6,8 @@ can paste it back into the window you were using.
 
 ## Download for Windows
 
-1. Open this repository's **Releases** page on GitHub.
-2. Download `k5qref-windows-x64.zip` from the latest release.
+1. Download [`k5qref-windows-x64.zip`](https://github.com/kysja/k5qref/releases/latest/download/k5qref-windows-x64.zip)
+   from the [latest release](https://github.com/kysja/k5qref/releases/latest).
 3. Extract the ZIP to a folder you can keep, such as `Documents\k5qref`.
 4. Run `k5qref.exe`. Its icon will appear in the Windows notification area.
 
