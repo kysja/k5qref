@@ -13,6 +13,7 @@ import os
 import queue
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -28,6 +29,24 @@ MUTEX_NAME = "k5qref_single_instance_mutex"
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
+user32.VkKeyScanW.restype = ctypes.c_short
+
+WM_HOTKEY = 0x0312
+WM_QUIT = 0x0012
+MOD_NOREPEAT = 0x4000
+HOTKEY_MODS = {
+    "ctrl": 0x2, "control": 0x2, "alt": 0x1, "shift": 0x4,
+    "win": 0x8, "windows": 0x8,
+}
+HOTKEY_VKS = {
+    "space": 0x20, "tab": 0x09, "enter": 0x0D, "return": 0x0D,
+    "esc": 0x1B, "escape": 0x1B, "backspace": 0x08,
+    "insert": 0x2D, "delete": 0x2E, "home": 0x24, "end": 0x23,
+    "page up": 0x21, "pageup": 0x21, "page down": 0x22, "pagedown": 0x22,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "print screen": 0x2C, "pause": 0x13,
+    "num lock": 0x90, "scroll lock": 0x91, "caps lock": 0x14,
+}
 
 # Light palette
 C_BORDER = "#d5d8dd"
@@ -124,6 +143,35 @@ def force_foreground(hwnd: int) -> None:
             user32.AttachThreadInput(our_tid, fg_tid, False)
 
 
+def parse_hotkey(spec: str) -> tuple[int, int]:
+    """Parse a "ctrl+f1"-style string into (modifiers, vk) as expected by
+    RegisterHotKey. Raises ValueError for anything it cannot map."""
+    mods = MOD_NOREPEAT
+    vk = None
+    for part in spec.lower().split("+"):
+        part = part.strip()
+        if part in HOTKEY_MODS:
+            mods |= HOTKEY_MODS[part]
+            continue
+        if vk is not None:
+            raise ValueError(f"more than one non-modifier key in {spec!r}")
+        if part in HOTKEY_VKS:
+            vk = HOTKEY_VKS[part]
+        elif part[:1] == "f" and part[1:].isdigit() \
+                and 1 <= int(part[1:]) <= 24:
+            vk = 0x70 + int(part[1:]) - 1  # VK_F1..VK_F24
+        elif len(part) == 1:
+            scan = user32.VkKeyScanW(ord(part))
+            if scan == -1:
+                raise ValueError(f"unknown key {part!r}")
+            vk = scan & 0xFF
+        else:
+            raise ValueError(f"unknown key {part!r}")
+    if vk is None:
+        raise ValueError(f"no non-modifier key in {spec!r}")
+    return mods, vk
+
+
 class MONITORINFO(ctypes.Structure):
     _fields_ = [
         ("cbSize", ctypes.wintypes.DWORD),
@@ -205,7 +253,8 @@ class SnippetPicker:
             self.config_error = self._fmt_config_error(e)
         self.config_mtime = self._mtime()
         self.prev_hwnd = 0
-        self.hotkey_handle = None
+        self.hotkey_error: str | None = None
+        self._hotkey_thread: threading.Thread | None = None
         self.events: queue.Queue = queue.Queue()
         # ("header", str, 0) | ("snip", dict, indent_px)
         self.rows: list[tuple[str, object, int]] = []
@@ -617,28 +666,64 @@ class SnippetPicker:
         return f"config.json could not be read: {e}"
 
     def _update_status(self) -> None:
-        if self.config_error:
-            self.hint.config(text="⚠ " + self.config_error, fg="#d93025")
+        error = self.config_error or self.hotkey_error
+        if error:
+            self.hint.config(text="⚠ " + error, fg="#d93025")
         else:
             hint = HINT_TEXT_TABS if len(self._tabs()) > 1 else HINT_TEXT
             self.hint.config(text=hint, fg=C_FAINT)
         if hasattr(self, "tray"):
             self.tray.title = f"{APP_TITLE}  ({self.config['hotkey']})" + \
-                ("  — config error!" if self.config_error else "")
+                ("  — error!" if error else "")
 
     def _register_hotkey(self) -> None:
-        if self.hotkey_handle is not None:
-            try:
-                keyboard.remove_hotkey(self.hotkey_handle)
-            except (KeyError, ValueError):
-                pass
-        # Callback runs on the keyboard hook thread: capture the currently
-        # focused window there, then hand off to the tk main thread.
-        def on_hotkey():
-            self.prev_hwnd = user32.GetForegroundWindow()
-            self.events.put("show")
-        self.hotkey_handle = keyboard.add_hotkey(
-            self.config.get("hotkey", "ctrl+f1"), on_hotkey)
+        """(Re)register the configured hotkey via Win32 RegisterHotKey on a
+        dedicated message-loop thread. Unlike a low-level keyboard hook,
+        the OS owns the registration, so it cannot be silently dropped
+        when the process stalls (the cause of hotkeys "dying" over time)."""
+        self._stop_hotkey_thread()
+        spec = self.config.get("hotkey", "ctrl+f1")
+        try:
+            mods, vk = parse_hotkey(spec)
+        except ValueError as e:
+            self.hotkey_error = f"hotkey: {e}"
+            return
+        result: dict = {}
+        ready = threading.Event()
+        self._hotkey_thread = threading.Thread(
+            target=self._hotkey_loop, args=(mods, vk, result, ready),
+            daemon=True, name="hotkey")
+        self._hotkey_thread.start()
+        ready.wait(2.0)
+        self.hotkey_error = None if result.get("ok") else \
+            f'hotkey "{spec}" could not be registered (in use by another app?)'
+
+    def _hotkey_loop(self, mods: int, vk: int, result: dict,
+                     ready: threading.Event) -> None:
+        msg = ctypes.wintypes.MSG()
+        # PeekMessage creates this thread's message queue, so a WM_QUIT
+        # posted by _stop_hotkey_thread is never lost
+        user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+        result["ok"] = bool(user32.RegisterHotKey(None, 1, mods, vk))
+        ready.set()
+        if not result["ok"]:
+            return
+        try:
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY:
+                    # Capture the focused window here, before our own
+                    # window takes it; the rest runs on the tk main thread.
+                    self.prev_hwnd = user32.GetForegroundWindow()
+                    self.events.put("show")
+        finally:
+            user32.UnregisterHotKey(None, 1)
+
+    def _stop_hotkey_thread(self) -> None:
+        t = self._hotkey_thread
+        self._hotkey_thread = None
+        if t and t.is_alive():
+            user32.PostThreadMessageW(t.native_id, WM_QUIT, 0, 0)
+            t.join(1.0)
 
     # --------------------------------------------------------------- loop
 
@@ -665,10 +750,7 @@ class SnippetPicker:
         self.root.after(50, self._poll_events)
 
     def quit(self) -> None:
-        try:
-            keyboard.unhook_all()
-        except Exception:
-            pass
+        self._stop_hotkey_thread()
         self.tray.stop()
         self.root.destroy()
 

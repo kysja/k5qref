@@ -61,8 +61,10 @@ app keeps the last working configuration and displays the error.
 }
 ```
 
-- `hotkey`: any combination supported by the Python `keyboard` package, such
-  as `ctrl+f1`, `ctrl+shift+space`, or `win+insert`.
+- `hotkey`: modifiers (`ctrl`, `alt`, `shift`, `win`) plus one key, such as
+  `ctrl+f1`, `ctrl+shift+space`, or `win+insert`. Keys: `f1`–`f24`, letters,
+  digits, and names like `space`, `tab`, `enter`, `insert`, `delete`, `home`,
+  `end`, `page up`, `page down`, and the arrow keys.
 - `auto_paste`: when `true`, k5qref returns focus and sends Ctrl+V. When
   `false`, it only copies the selected text.
 - `tabs`: maps each tab name to its groups. Each group maps to a list of
