@@ -23,8 +23,22 @@ not code-signed.
 - Use **Up/Down** and **Enter**, or click an entry, to select it.
 - Use **Left/Right** or click a tab to switch tabs.
 - Press **Esc** to close without selecting anything.
-- Right-click the tray icon to show the picker, edit or reload the config, or
-  quit the app.
+- Right-click the tray icon to show the picker, open Setup, or quit the app.
+
+## Setup
+
+Click **⚙ Setup** in the picker, or choose **Setup** from the tray menu, to
+manage your snippets without touching the JSON. The tree on the left shows tabs, groups, and snippets;
+select one to edit its name, or a snippet's title and text, on the right.
+
+- **+ Tab**, **+ Group**, **+ Snippet** add an item next to the selection.
+- **▲ / ▼** (or **Ctrl+Up/Down**) reorder. Snippets also move into and out
+  of groups, so they can go anywhere within their tab.
+- **Delete** removes the selection (it asks first for a tab or group that
+  still has snippets).
+- **Save** (or **Ctrl+S**) writes `config.json`, and the picker uses the new
+  version right away.
+- **Edit source JSON** opens `config.json` in your text editor.
 
 By default, a selected snippet is copied and pasted into the window that was
 active before the picker opened. Set `auto_paste` to `false` for copy-only mode.

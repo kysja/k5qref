@@ -23,6 +23,8 @@ import pyperclip
 import pystray
 from PIL import Image, ImageDraw
 
+from editor import ConfigEditor
+
 APP_NAME = "k5qref"
 APP_TITLE = "Quick Reference"
 MUTEX_NAME = "k5qref_single_instance_mutex"
@@ -60,7 +62,7 @@ C_ACCENT = "#1a73e8"
 
 WIN_W = 680
 ROW_H = 34
-MAX_VISIBLE = 12
+MAX_VISIBLE = 18
 
 DEFAULT_CONFIG = {
     "hotkey": "ctrl+f1",
@@ -112,8 +114,56 @@ def load_config() -> dict:
             json.dump(DEFAULT_CONFIG, f, indent=4)
         return dict(DEFAULT_CONFIG)
     merged = dict(DEFAULT_CONFIG)
+    # the sample tabs are only a fallback; a file that brings its own
+    # top-level "snippets" must not have them merged in on top
+    if "snippets" in cfg:
+        del merged["tabs"]
     merged.update(cfg)
     return merged
+
+
+def config_tabs(config: dict) -> list[tuple[str | None, object]]:
+    """Normalize the optional "tabs" config key to [(name, snippets)].
+    Accepts a dict of {tab: snippets} or a list of single-key dicts /
+    {"name": ..., "snippets": ...} objects. Without "tabs", everything
+    lives in a single unnamed tab (no tab bar shown)."""
+    tabs = config.get("tabs")
+    out: list[tuple[str | None, object]] = []
+    if isinstance(tabs, dict):
+        out = [(str(name), sn) for name, sn in tabs.items()]
+    elif isinstance(tabs, list):
+        for item in tabs:
+            if not isinstance(item, dict):
+                continue
+            if "name" in item and "snippets" in item:
+                out.append((str(item["name"]), item["snippets"]))
+            elif len(item) == 1:
+                (name, sn), = item.items()
+                out.append((str(name), sn))
+    return out or [(None, config.get("snippets", []))]
+
+
+def tab_groups(sn: object) -> list[tuple[str | None, list[dict]]]:
+    """Normalize one tab's snippet shapes: a dict of {group: [snippets]},
+    a flat list of snippets, or a list mixing plain snippets with
+    single-key {group: [snippets]} dicts (file order preserved)."""
+    if isinstance(sn, dict):
+        return [(g, items) for g, items in sn.items()
+                if isinstance(items, list)]
+    out: list[tuple[str | None, list[dict]]] = []
+    for item in sn if isinstance(sn, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if "title" in item or "text" in item:
+            if out and out[-1][0] is None:
+                out[-1][1].append(item)
+            else:
+                out.append((None, [item]))
+        elif len(item) == 1:
+            (group, items), = item.items()
+            if isinstance(items, list):
+                out.append((group, items))
+    return out
 
 
 def ensure_single_instance() -> None:
@@ -262,6 +312,7 @@ class SnippetPicker:
         self.tab_idx = 0
         self.user_pos: tuple[int, int] | None = None  # kept after dragging
         self.show_pos: tuple[int, int] | None = None  # anchor for this open
+        self.editor: ConfigEditor | None = None
 
         self.root = tk.Tk()
         self.root.withdraw()
@@ -278,8 +329,7 @@ class SnippetPicker:
             f"{APP_TITLE}  ({self.config['hotkey']})",
             menu=pystray.Menu(
                 pystray.MenuItem("Show", lambda: self.events.put("show"), default=True),
-                pystray.MenuItem("Edit config", lambda: self.events.put("edit")),
-                pystray.MenuItem("Reload config", lambda: self.events.put("reload")),
+                pystray.MenuItem("Setup", lambda: self.events.put("editor")),
                 pystray.MenuItem("Quit", lambda: self.events.put("quit")),
             ),
         )
@@ -306,9 +356,16 @@ class SnippetPicker:
         header.pack(fill="x", padx=14, pady=(10, 4))
         brand = tk.Label(header, text=APP_TITLE, font=f_brand, bg=C_BG, fg=C_MUTED)
         brand.pack(side="left")
+        # not in the drag-binding loop below, so a click opens the editor
+        setup = tk.Label(header, text="⚙ Setup", font=f_small, bg=C_BG,
+                         fg=C_MUTED, cursor="hand2")
+        setup.pack(side="right")
+        setup.bind("<Button-1>", lambda e: (self.hide(), self._open_editor()))
+        setup.bind("<Enter>", lambda e: setup.config(fg=C_ACCENT))
+        setup.bind("<Leave>", lambda e: setup.config(fg=C_MUTED))
         self.hotkey_label = tk.Label(
             header, text=self.config["hotkey"], font=f_small, bg=C_BG, fg=C_FAINT)
-        self.hotkey_label.pack(side="right")
+        self.hotkey_label.pack(side="right", padx=(0, 12))
 
         box = tk.Frame(self.outer, bg=C_INPUT_BG)
         box.pack(fill="x", padx=12, pady=(2, 8))
@@ -455,49 +512,11 @@ class SnippetPicker:
         self._fit_height()
 
     def _tabs(self) -> list[tuple[str | None, object]]:
-        """Normalize the optional "tabs" config key to [(name, snippets)].
-        Accepts a dict of {tab: snippets} or a list of single-key dicts /
-        {"name": ..., "snippets": ...} objects. Without "tabs", everything
-        lives in a single unnamed tab (no tab bar shown)."""
-        tabs = self.config.get("tabs")
-        out: list[tuple[str | None, object]] = []
-        if isinstance(tabs, dict):
-            out = [(str(name), sn) for name, sn in tabs.items()]
-        elif isinstance(tabs, list):
-            for item in tabs:
-                if not isinstance(item, dict):
-                    continue
-                if "name" in item and "snippets" in item:
-                    out.append((str(item["name"]), item["snippets"]))
-                elif len(item) == 1:
-                    (name, sn), = item.items()
-                    out.append((str(name), sn))
-        return out or [(None, self.config.get("snippets", []))]
+        return config_tabs(self.config)
 
     def _groups(self) -> list[tuple[str | None, list[dict]]]:
-        """Normalize the active tab's snippet shapes: a dict of
-        {group: [snippets]}, a flat list of snippets, or a list mixing
-        plain snippets with single-key {group: [snippets]} dicts (file
-        order preserved)."""
         tabs = self._tabs()
-        sn = tabs[min(self.tab_idx, len(tabs) - 1)][1]
-        if isinstance(sn, dict):
-            return [(g, items) for g, items in sn.items()
-                    if isinstance(items, list)]
-        out: list[tuple[str | None, list[dict]]] = []
-        for item in sn if isinstance(sn, list) else []:
-            if not isinstance(item, dict):
-                continue
-            if "title" in item or "text" in item:
-                if out and out[-1][0] is None:
-                    out[-1][1].append(item)
-                else:
-                    out.append((None, [item]))
-            elif len(item) == 1:
-                (group, items), = item.items()
-                if isinstance(items, list):
-                    out.append((group, items))
-        return out
+        return tab_groups(tabs[min(self.tab_idx, len(tabs) - 1)][1])
 
     def _redraw(self) -> None:
         c = self.canvas
@@ -564,9 +583,13 @@ class SnippetPicker:
         self.entry.focus_set()
 
     def _on_focus_out(self, _event) -> None:
-        # Hide when the user clicks away; ignore focus moves within the app.
-        self.root.after(80, lambda: (
-            self.hide() if self.root.focus_get() is None else None))
+        # Hide when the user clicks away, including into the editor window;
+        # ignore focus moves within the picker itself.
+        def check() -> None:
+            focus = self.root.focus_get()
+            if focus is None or focus.winfo_toplevel() is not self.root:
+                self.hide()
+        self.root.after(80, check)
 
     # --------------------------------------------------------- show / hide
 
@@ -630,6 +653,28 @@ class SnippetPicker:
             os.startfile(CONFIG_PATH, "edit")
         except OSError:
             subprocess.Popen(["notepad.exe", CONFIG_PATH])
+
+    def _open_editor(self) -> None:
+        """Open the snippet editor, or bring the open one to the front."""
+        if self.editor is None or not self.editor.winfo_exists():
+            self._maybe_reload()   # start from what's on disk right now
+            tabs = [(name, tab_groups(sn)) for name, sn in self._tabs()]
+            self.editor = ConfigEditor(self.root, self.config, tabs,
+                                       CONFIG_PATH, parse_hotkey, self._reload,
+                                       self._edit_config)
+            try:
+                self.editor.iconbitmap(resource_path("assets", "k5qref.ico"))
+            except tk.TclError:
+                pass
+            if self.config_error:
+                self.editor.set_status(
+                    self.config_error + ". Saving replaces the file with "
+                    "what's shown here.", error=True)
+        self.editor.deiconify()
+        self.editor.lift()
+        self.editor.update_idletasks()
+        force_foreground(int(self.editor.wm_frame(), 16))
+        self.editor.focus_force()
 
     def _mtime(self) -> float:
         try:
@@ -733,10 +778,8 @@ class SnippetPicker:
                 ev = self.events.get_nowait()
                 if ev == "show":
                     self.show()
-                elif ev == "edit":
-                    self._edit_config()
-                elif ev == "reload":
-                    self._reload()
+                elif ev == "editor":
+                    self._open_editor()
                 elif ev == "quit":
                     self.quit()
                     return
